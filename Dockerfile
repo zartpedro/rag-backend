@@ -5,9 +5,9 @@ RUN pip install --upgrade pip setuptools wheel
 WORKDIR /app
 COPY requirements.txt .
 
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip setuptools wheel \
+  && pip install --no-cache-dir --pre -r requirements.txt
 
 COPY . .
 
-EXPOSE 80
-CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "main:app", "--bind", "0.0.0.0:80", "--workers", "2"]
+CMD ["gunicorn", "main:app", "--bind", "0.0.0.0:80", "--workers", "4"]
