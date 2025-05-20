@@ -1,9 +1,10 @@
+azure-ai-openai==1.0.0b10
+azure-search-documents
+azure-identity
 fastapi
 uvicorn[standard]
 gunicorn
-azure-search-documents
-azure-ai-openai
-python-docx
 pdfminer.six
+python-docx
 tiktoken
 python-multipart
