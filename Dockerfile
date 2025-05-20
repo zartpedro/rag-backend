@@ -5,8 +5,8 @@ RUN pip install --upgrade pip setuptools wheel
 WORKDIR /app
 COPY requirements.txt .
 
-RUN pip install --upgrade pip setuptools wheel \
-  && pip install --no-cache-dir --pre -r requirements.txt
+RUN pip install --no-cache-dir --pre -r requirements.txt \
+  && pip install --upgrade pip setuptools wheel
 
 COPY . .
 
