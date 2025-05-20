@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+gunicorn
+azure-search-documents
+azure-ai-openai
+python-docx
+pdfminer.six
+tiktoken
+python-multipart
