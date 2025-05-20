@@ -1,5 +1,5 @@
-azure-ai-openai==1.0.0b10
-azure-search-documents
++azure-search-documents>=11.5.2
++azure-ai-openai==1.0.0b6
 azure-identity
 fastapi
 uvicorn[standard]
