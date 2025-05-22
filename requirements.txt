@@ -1,6 +1,7 @@
 azure-search-documents
 openai
 azure-identity
+azure-core
 fastapi
 uvicorn[standard]
 gunicorn
