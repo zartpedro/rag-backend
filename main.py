@@ -99,8 +99,10 @@ async def rag_query(
         # 2) coleto trechos encontrados
         snippets = []
         # A API de respostas extrativas (answers) é mais robusta
-        async for answer_result in results.get_answers():
-            snippets.append(answer_result.text)
+        answer_results_list = await results.get_answers()  # <<-- ADICIONE O AWAIT AQUI
+        if answer_results_list:  # Verifique se a lista não está vazia
+            for answer_result in answer_results_list:  # Loop FOR normal sobre a lista
+                snippets.append(answer_result.text)
 
         # Se não houver 'answers', podemos usar os 'captions' ou os próprios documentos
         if not snippets:
