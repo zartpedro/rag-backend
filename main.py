@@ -66,6 +66,11 @@ def get_openai_client() -> AsyncAzureOpenAI:
 app = FastAPI(title="RAG Backend")
 
 # --- Endpoints ---
+@app.get("/")
+async def root():
+    return {"status":"ok"}
+
+
 @app.get("/health")
 async def health():
     # Poderia adicionar verificações de dependência aqui (e.g., ping no search/openai)
