@@ -90,10 +90,9 @@ async def rag_query(
             search_text=req.query,
             query_type="semantic",
             semantic_configuration_name=settings.AZURE_SEARCH_SEMANTIC_CONFIG_NAME,
-            top=req.top_k,
-            query_caption="extractive", # Para respostas extrativas
-            query_answer="extractive",
-            top_k_answers=3 # Número de respostas extrativas desejadas
+            top=req.top_k, # Número de documentos a retornar
+            query_caption="extractive", # Para legendas extrativas
+            query_answer=f"extractive|count-3" # <--- ALTERAR AQUI para incluir a contagem
         )
 
         # 2) coleto trechos encontrados
