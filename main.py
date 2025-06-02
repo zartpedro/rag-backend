@@ -76,6 +76,8 @@ async def health():
     # Poderia adicionar verificações de dependência aqui (e.g., ping no search/openai)
     return {"status": "ok", "message": "Service is healthy"}
 
+from fastapi import HTTPException
+
 @app.post("/query", response_model=QueryResponse)
 async def rag_query(
     req: QueryRequest,
@@ -89,19 +91,27 @@ async def rag_query(
         results = await search_client.search(
             search_text=req.query,
             top=req.top_k  # retorna apenas os top_k documentos
-            # não passamos query_type nem semantic_configuration_name
+            # Sem parâmetros de busca semântica
         )
 
-        # 2) coleto trechos encontrados (aqui não teremos 'captions' nem 'answers')
-        snippets = []
+        # 2) colete trechos encontrados (agora cada 'result' é um dict)
+        snippets: list[str] = []
         async for result in results:
-            # supondo que cada 'result' tenha um campo 'chunk' ou algo semelhante
-            # você deve substituir 'AZURE_SEARCH_CHUNK_FIELD' pelo nome correto do campo no seu índice
+            # Supondo que seu índice tenha um campo chamado AZURE_SEARCH_CHUNK_FIELD
+            # Exemplo: settings.AZURE_SEARCH_CHUNK_FIELD = "content"
+            chunk_text = None
             try:
-                snippets.append(result[settings.AZURE_SEARCH_CHUNK_FIELD])
-            except (KeyError, TypeError):
+                # Se result for um dict-like
+                chunk_text = result.get(settings.AZURE_SEARCH_CHUNK_FIELD)
+            except Exception:
+                # Em alguns casos result pode ser um objeto diferente; tente getattr
+                chunk_text = getattr(result, settings.AZURE_SEARCH_CHUNK_FIELD, None)
+
+            if chunk_text:
+                snippets.append(chunk_text)
+            else:
                 logger.warning(
-                    f"Campo '{settings.AZURE_SEARCH_CHUNK_FIELD}' não encontrado em resultado: {result}"
+                    f"Campo '{settings.AZURE_SEARCH_CHUNK_FIELD}' não encontrado neste resultado: {result}"
                 )
 
         if not snippets:
@@ -110,7 +120,7 @@ async def rag_query(
         else:
             prompt_context = "\n\n---\n\n".join(snippets)
 
-        # 3) monta o prompt para o OpenAI
+        # 3) monte o prompt para o OpenAI
         system_message = (
             "Você é um assistente de IA prestativo. "
             "Responda à pergunta do usuário com base no contexto fornecido. "
