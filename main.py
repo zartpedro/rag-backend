@@ -85,53 +85,43 @@ async def rag_query(
     logger.info(f"Received query: '{req.query}' with top_k={req.top_k}")
 
     try:
-        # 1) busca semântica no Azure Search (usando await com cliente assíncrono)
+        # 1) Busca full-text no Azure Search (sem semântica)
         results = await search_client.search(
             search_text=req.query,
-            query_type="semantic",
-            semantic_configuration_name=settings.AZURE_SEARCH_SEMANTIC_CONFIG_NAME,
-            top=req.top_k, # Número de documentos a retornar
-            query_caption="extractive", # Para legendas extrativas
-            query_answer=f"extractive|count-3" # <--- ALTERAR AQUI para incluir a contagem
+            top=req.top_k  # apenas retorna os 'top_k' primeiros documentos
         )
 
-        # 2) coleto trechos encontrados
+        # 2) Coleta trechos (chunks) dos documentos retornados
         snippets = []
-        # A API de respostas extrativas (answers) é mais robusta
-        answer_results_list = await results.get_answers()  # <<-- ADICIONE O AWAIT AQUI
-        if answer_results_list:  # Verifique se a lista não está vazia
-            for answer_result in answer_results_list:  # Loop FOR normal sobre a lista
-                snippets.append(answer_result.text)
+        async for result in results:
+            # Se houver um campo de legendas (captions), você pode coletá-las,
+            # mas em busca full-text normalmente pegamos o chunk principal:
+            if result.captions:
+                for caption in result.captions:
+                    snippets.append(caption.text)
+            else:
+                try:
+                    # Ajuste este campo conforme o nome correto do chunk no seu índice
+                    snippets.append(result[settings.AZURE_SEARCH_CHUNK_FIELD])
+                except (KeyError, TypeError):
+                    logger.warning(
+                        f"Campo '{settings.AZURE_SEARCH_CHUNK_FIELD}' não encontrado no resultado ou inacessível."
+                    )
 
-        # Se não houver 'answers', podemos usar os 'captions' ou os próprios documentos
-        if not snippets:
-            logger.info("No direct answers found, collecting captions or document chunks.")
-            async for result in results: # Iterar sobre os resultados assíncronos
-                if result.captions:
-                    for caption in result.captions:
-                        snippets.append(caption.text)
-                else:
-                    # Se não houver captions, pegue o campo de chunk do documento
-                    # Assumindo que 'result' é um dicionário ou objeto com o campo
-                    try:
-                        snippets.append(result[settings.AZURE_SEARCH_CHUNK_FIELD])
-                    except KeyError:
-                        logger.warning(f"Field '{settings.AZURE_SEARCH_CHUNK_FIELD}' not found in search result.")
-                    except TypeError: # Se 'result' não for subscriptable
-                         logger.warning(f"Search result of type {type(result)} is not subscriptable for field '{settings.AZURE_SEARCH_CHUNK_FIELD}'.")
-
-
+        # Se não houver snippets, defina contexto genérico
         if not snippets:
             logger.warning(f"No snippets found for query: '{req.query}'")
-            # Decida o que fazer: retornar um erro, ou tentar responder sem contexto
-            # return QueryResponse(answer="Não encontrei informações suficientes para responder.", sources=[])
-            # Ou permitir que o LLM tente responder sem contexto específico
             prompt_context = "Nenhum contexto específico encontrado."
         else:
+            # Junta todos os snippets separados por delimitador
             prompt_context = "\n\n---\n\n".join(snippets)
 
-        # 3) monta o prompt para o OpenAI
-        system_message = "Você é um assistente de IA prestativo. Responda à pergunta do usuário com base no contexto fornecido. Se o contexto não for suficiente, informe educadamente."
+        # 3) Monta o prompt para o OpenAI
+        system_message = (
+            "Você é um assistente de IA prestativo. "
+            "Responda à pergunta do usuário com base no contexto fornecido. "
+            "Se o contexto não for suficiente, informe educadamente."
+        )
         user_prompt = (
             "Use os seguintes trechos de contexto para responder à pergunta.\n\n"
             f"Contexto:\n{prompt_context}\n\n"
@@ -140,26 +130,36 @@ async def rag_query(
 
         logger.info(f"Sending prompt to OpenAI model: {settings.AZURE_OPENAI_MODEL}")
 
-        # 4) chama o OpenAI ChatCompletion (usando await)
+        # 4) Chama o OpenAI ChatCompletion (assíncrono)
         chat_completion = await openai_client.chat_completions.create(
             model=settings.AZURE_OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": system_message},
-                {"role": "user", "content": user_prompt}
+                {"role": "user",   "content": user_prompt}
             ],
-            max_tokens=800 # Defina um max_tokens apropriado
+            max_tokens=800  # ajuste conforme necessário
         )
 
-        answer = chat_completion.choices[0].message.content.strip() if chat_completion.choices else "Não recebi uma resposta do modelo."
+        answer = (
+            chat_completion.choices[0].message.content.strip()
+            if chat_completion.choices else
+            "Não recebi uma resposta do modelo."
+        )
         logger.info(f"Received answer from OpenAI: '{answer}'")
 
-        return QueryResponse(answer=answer, sources=list(set(snippets))) # list(set()) para remover duplicatas
+        # Retorna as fontes (snippets) sem duplicatas
+        return QueryResponse(answer=answer, sources=list(set(snippets)))
 
-    except HTTPException: # Re-throw HTTPExceptions para que o FastAPI as manipule
+    except HTTPException:
+        # Se já for um HTTPException, apenas re-lança para o FastAPI tratar
         raise
     except Exception as e:
-        logger.error(f"Error processing RAG query: {e}", exc_info=True) # exc_info=True para logar o stack trace
-        raise HTTPException(status_code=500, detail=f"Ocorreu um erro interno ao processar sua solicitação: {str(e)}")
+        logger.error(f"Error processing RAG query: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Ocorreu um erro interno ao processar sua solicitação: {str(e)}"
+        )
+
 
 # opcional, se quiser rodar com 'python main.py'
 if __name__ == "__main__":
