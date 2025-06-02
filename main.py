@@ -85,38 +85,32 @@ async def rag_query(
     logger.info(f"Received query: '{req.query}' with top_k={req.top_k}")
 
     try:
-        # 1) Busca full-text no Azure Search (sem semântica)
+        # 1) busca simples no Azure Search
         results = await search_client.search(
             search_text=req.query,
-            top=req.top_k  # apenas retorna os 'top_k' primeiros documentos
+            top=req.top_k  # retorna apenas os top_k documentos
+            # não passamos query_type nem semantic_configuration_name
         )
 
-        # 2) Coleta trechos (chunks) dos documentos retornados
+        # 2) coleto trechos encontrados (aqui não teremos 'captions' nem 'answers')
         snippets = []
         async for result in results:
-            # Se houver um campo de legendas (captions), você pode coletá-las,
-            # mas em busca full-text normalmente pegamos o chunk principal:
-            if result.captions:
-                for caption in result.captions:
-                    snippets.append(caption.text)
-            else:
-                try:
-                    # Ajuste este campo conforme o nome correto do chunk no seu índice
-                    snippets.append(result[settings.AZURE_SEARCH_CHUNK_FIELD])
-                except (KeyError, TypeError):
-                    logger.warning(
-                        f"Campo '{settings.AZURE_SEARCH_CHUNK_FIELD}' não encontrado no resultado ou inacessível."
-                    )
+            # supondo que cada 'result' tenha um campo 'chunk' ou algo semelhante
+            # você deve substituir 'AZURE_SEARCH_CHUNK_FIELD' pelo nome correto do campo no seu índice
+            try:
+                snippets.append(result[settings.AZURE_SEARCH_CHUNK_FIELD])
+            except (KeyError, TypeError):
+                logger.warning(
+                    f"Campo '{settings.AZURE_SEARCH_CHUNK_FIELD}' não encontrado em resultado: {result}"
+                )
 
-        # Se não houver snippets, defina contexto genérico
         if not snippets:
             logger.warning(f"No snippets found for query: '{req.query}'")
             prompt_context = "Nenhum contexto específico encontrado."
         else:
-            # Junta todos os snippets separados por delimitador
             prompt_context = "\n\n---\n\n".join(snippets)
 
-        # 3) Monta o prompt para o OpenAI
+        # 3) monta o prompt para o OpenAI
         system_message = (
             "Você é um assistente de IA prestativo. "
             "Responda à pergunta do usuário com base no contexto fornecido. "
@@ -130,35 +124,35 @@ async def rag_query(
 
         logger.info(f"Sending prompt to OpenAI model: {settings.AZURE_OPENAI_MODEL}")
 
-        # 4) Chama o OpenAI ChatCompletion (assíncrono)
+        # 4) chama o OpenAI ChatCompletion
         chat_completion = await openai_client.chat_completions.create(
             model=settings.AZURE_OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": system_message},
-                {"role": "user",   "content": user_prompt}
+                {"role": "user", "content": user_prompt},
             ],
-            max_tokens=800  # ajuste conforme necessário
+            max_tokens=800,
         )
 
         answer = (
             chat_completion.choices[0].message.content.strip()
-            if chat_completion.choices else
-            "Não recebi uma resposta do modelo."
+            if chat_completion.choices
+            else "Não recebi uma resposta do modelo."
         )
         logger.info(f"Received answer from OpenAI: '{answer}'")
 
-        # Retorna as fontes (snippets) sem duplicatas
         return QueryResponse(answer=answer, sources=list(set(snippets)))
 
     except HTTPException:
-        # Se já for um HTTPException, apenas re-lança para o FastAPI tratar
+        # propaga erros HTTP para o FastAPI lidar (ex.: 404, 401, etc)
         raise
     except Exception as e:
         logger.error(f"Error processing RAG query: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Ocorreu um erro interno ao processar sua solicitação: {str(e)}"
+            detail=f"Ocorreu um erro interno ao processar sua solicitação: {str(e)}",
         )
+
 
 
 # opcional, se quiser rodar com 'python main.py'
