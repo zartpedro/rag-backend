@@ -1,54 +1,49 @@
 # main.py
 import os
+import logging
 from typing import List
-import logging # Adicionar para logging
 
-from fastapi import FastAPI, HTTPException, Depends # Adicionar Depends para injeção
-from pydantic import BaseModel, Field # Adicionar Field para validação/exemplos
-from pydantic_settings import BaseSettings, SettingsConfigDict # Para configuração elegante
+from fastapi import FastAPI, HTTPException, Depends
+from pydantic import BaseModel, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from azure.core.credentials import AzureKeyCredential
-from azure.search.documents.aio import SearchClient as AsyncSearchClient # Usar cliente assíncrono
-from openai import AsyncAzureOpenAI # Usar cliente assíncrono
+from azure.search.documents.aio import SearchClient as AsyncSearchClient
+from azure.ai.openai.aio import OpenAIClient  # 👈 use o SDK oficial
+# (lembre-se de ter instalado azure-ai-openai e aiohttp nos requirements)
 
-# Configurar logging básico
+# --- Logging básico ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Modelos Pydantic para Configuração (Mais Elegante) ---
+# --- Configurações via Pydantic Settings ---
 class AppSettings(BaseSettings):
     AZURE_SEARCH_ENDPOINT: str
     AZURE_SEARCH_KEY: str
     AZURE_SEARCH_INDEX_NAME: str
+
     AZURE_OPENAI_ENDPOINT: str
     AZURE_OPENAI_KEY: str
-    AZURE_OPENAI_API_VERSION: str = "2024-02-01"  # Exemplo, ajuste conforme necessário
-    AZURE_OPENAI_MODEL: str = "embedding-deploy" # Ou o seu deployment name
-    # Opcional: para configurar o nome da configuração semântica do Azure Search
-    AZURE_SEARCH_SEMANTIC_CONFIG_NAME: str = "default"
-    AZURE_SEARCH_CHUNK_FIELD: str = "chunk" # Campo do seu índice que contém o texto
+    AZURE_OPENAI_API_VERSION: str = "2024-02-01"
+    AZURE_OPENAI_MODEL: str = "embedding-deploy"  # ou o nome exato do seu deployment
 
-    # Carrega de .env e variáveis de ambiente do sistema
+    AZURE_SEARCH_CHUNK_FIELD: str = "chunk"
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-settings = AppSettings() # Carrega as configurações na inicialização
+settings = AppSettings()
 
-# --- modelos de request/response (como antes, talvez com exemplos) ---
+# --- Modelos Pydantic de Request/Response ---
 class QueryRequest(BaseModel):
     query: str
-    top_k: int = Field(default=5, ge=1, le=20) # Adiciona validação e exemplo
+    top_k: int = Field(default=5, ge=1, le=20)
 
 class QueryResponse(BaseModel):
     answer: str
     sources: List[str]
 
-# --- Clientes (instanciados de forma assíncrona e gerenciados pelo FastAPI) ---
-# Não é ideal instanciar clientes globalmente se eles precisam ser assíncronos
-# e gerenciados por eventos de startup/shutdown ou injeção de dependência.
 
-# Usaremos injeção de dependência para os clientes.
-# Você pode movê-los para um módulo de 'serviços' se o app crescer.
-
+# --- Dependências (injeção de clientes assíncronos) ---
 def get_search_client() -> AsyncSearchClient:
     return AsyncSearchClient(
         endpoint=settings.AZURE_SEARCH_ENDPOINT,
@@ -56,71 +51,59 @@ def get_search_client() -> AsyncSearchClient:
         credential=AzureKeyCredential(settings.AZURE_SEARCH_KEY)
     )
 
-def get_openai_client() -> AsyncAzureOpenAI:
-    return AsyncAzureOpenAI(
-        api_key=settings.AZURE_OPENAI_KEY,
-        azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
-        api_version=settings.AZURE_OPENAI_API_VERSION,
+def get_openai_client() -> OpenAIClient:
+    return OpenAIClient(
+        endpoint=settings.AZURE_OPENAI_ENDPOINT,
+        credential=AzureKeyCredential(settings.AZURE_OPENAI_KEY),
+        api_version=settings.AZURE_OPENAI_API_VERSION
     )
 
-app = FastAPI(title="RAG Backend")
 
-# --- Endpoints ---
-@app.get("/")
-async def root():
-    return {"status":"ok"}
+# --- Cria a aplicação FastAPI ---
+app = FastAPI(title="RAG Backend")
 
 
 @app.get("/health")
 async def health():
-    # Poderia adicionar verificações de dependência aqui (e.g., ping no search/openai)
     return {"status": "ok", "message": "Service is healthy"}
 
-from fastapi import HTTPException
 
 @app.post("/query", response_model=QueryResponse)
 async def rag_query(
     req: QueryRequest,
     search_client: AsyncSearchClient = Depends(get_search_client),
-    openai_client: AsyncAzureOpenAI = Depends(get_openai_client)
+    openai_client: OpenAIClient   = Depends(get_openai_client)
 ):
     logger.info(f"Received query: '{req.query}' with top_k={req.top_k}")
 
     try:
-        # 1) busca simples no Azure Search
+        # 1) busca simples no Azure Search (sem semantic)
         results = await search_client.search(
             search_text=req.query,
-            top=req.top_k  # retorna apenas os top_k documentos
-            # Sem parâmetros de busca semântica
+            top=req.top_k
         )
 
-        # 2) colete trechos encontrados (agora cada 'result' é um dict)
-        snippets: list[str] = []
+        # 2) coleta o(s) campo(s) de “chunk” retornado(s)
+        snippets: List[str] = []
         async for result in results:
-            # Supondo que seu índice tenha um campo chamado AZURE_SEARCH_CHUNK_FIELD
-            # Exemplo: settings.AZURE_SEARCH_CHUNK_FIELD = "content"
+            # result pode ser um dict-like ou um objeto; usamos .get() primeiro
             chunk_text = None
             try:
-                # Se result for um dict-like
                 chunk_text = result.get(settings.AZURE_SEARCH_CHUNK_FIELD)
             except Exception:
-                # Em alguns casos result pode ser um objeto diferente; tente getattr
                 chunk_text = getattr(result, settings.AZURE_SEARCH_CHUNK_FIELD, None)
 
             if chunk_text:
                 snippets.append(chunk_text)
             else:
-                logger.warning(
-                    f"Campo '{settings.AZURE_SEARCH_CHUNK_FIELD}' não encontrado neste resultado: {result}"
-                )
+                logger.warning(f"Campo '{settings.AZURE_SEARCH_CHUNK_FIELD}' não encontrado em: {result}")
 
         if not snippets:
-            logger.warning(f"No snippets found for query: '{req.query}'")
             prompt_context = "Nenhum contexto específico encontrado."
         else:
             prompt_context = "\n\n---\n\n".join(snippets)
 
-        # 3) monte o prompt para o OpenAI
+        # 3) montar o prompt para o OpenAI
         system_message = (
             "Você é um assistente de IA prestativo. "
             "Responda à pergunta do usuário com base no contexto fornecido. "
@@ -132,42 +115,34 @@ async def rag_query(
             f"Pergunta: {req.query}\n\nResposta:"
         )
 
-        logger.info(f"Sending prompt to OpenAI model: {settings.AZURE_OPENAI_MODEL}")
+        logger.info(f"Enviando prompt para o modelo: {settings.AZURE_OPENAI_MODEL}")
 
-        # 4) chama o OpenAI ChatCompletion
-        chat_completion = await openai_client.chat.completions.create(
+        # 4) chama o Azure OpenAI (chat completions)
+        chat = openai_client.chat_completions
+        chat_response = await chat.create(
             model=settings.AZURE_OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": system_message},
-                {"role": "user", "content": user_prompt},
+                {"role": "user",   "content": user_prompt}
             ],
-            max_tokens=800,
+            max_tokens=800
         )
 
-        answer = (
-            chat_completion.choices[0].message.content.strip()
-            if chat_completion.choices
-            else "Não recebi uma resposta do modelo."
-        )
-        logger.info(f"Received answer from OpenAI: '{answer}'")
+        answer = chat_response.choices[0].message.content.strip()
+        logger.info(f"Resposta do OpenAI: '{answer}'")
 
         return QueryResponse(answer=answer, sources=list(set(snippets)))
 
     except HTTPException:
-        # propaga erros HTTP para o FastAPI lidar (ex.: 404, 401, etc)
-        raise
+        raise  # deixa o FastAPI cuidar de erros HTTP “normais” (401, 404, etc)
     except Exception as e:
         logger.error(f"Error processing RAG query: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Ocorreu um erro interno ao processar sua solicitação: {str(e)}",
+            detail=f"Ocorreu um erro interno ao processar sua solicitação: {str(e)}"
         )
 
 
-
-# opcional, se quiser rodar com 'python main.py'
 if __name__ == "__main__":
     import uvicorn
-    # Para rodar localmente, as variáveis de ambiente podem ser carregadas de um .env se você tiver python-dotenv instalado
-    # ou configuradas no seu ambiente.
     uvicorn.run("main:app", host="0.0.0.0", port=8000, log_level="info", reload=True)
