@@ -23,7 +23,7 @@ class AppSettings(BaseSettings):
     AZURE_OPENAI_ENDPOINT: str
     AZURE_OPENAI_KEY: str
     AZURE_OPENAI_API_VERSION: str = "2024-02-01"  # Exemplo, ajuste conforme necessário
-    AZURE_OPENAI_MODEL: str = "text-embedding-3-small" # Ou o seu deployment name
+    AZURE_OPENAI_MODEL: str = "embedding-deploy" # Ou o seu deployment name
     # Opcional: para configurar o nome da configuração semântica do Azure Search
     AZURE_SEARCH_SEMANTIC_CONFIG_NAME: str = "default"
     AZURE_SEARCH_CHUNK_FIELD: str = "chunk" # Campo do seu índice que contém o texto
