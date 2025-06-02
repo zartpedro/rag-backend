@@ -135,7 +135,7 @@ async def rag_query(
         logger.info(f"Sending prompt to OpenAI model: {settings.AZURE_OPENAI_MODEL}")
 
         # 4) chama o OpenAI ChatCompletion
-        chat_completion = await openai_client.chat_completions.create(
+        chat_completion = await openai_client.chat.completions.create(
             model=settings.AZURE_OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": system_message},
