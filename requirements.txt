@@ -1,6 +1,6 @@
 azure-search-documents
 openai
-azure-ai-openai
+azure-openai
 azure-identity
 azure-core
 fastapi
