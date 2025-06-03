@@ -3,7 +3,6 @@ import openai
 import os
 import logging
 from typing import List
-from openai import AzureOpenAI
 
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel, Field
@@ -11,7 +10,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from azure.core.credentials import AzureKeyCredential
 from azure.search.documents.aio import SearchClient as AsyncSearchClient
-from azure.ai.openai.aio import OpenAIClient  # 👈 use o SDK oficial
+from openai import AsyncAzureOpenAI
+from app.models.chat_models import ChatMessage
+
+
 # (lembre-se de ter instalado azure-ai-openai e aiohttp nos requirements)
 
 # --- Logging básico ---
