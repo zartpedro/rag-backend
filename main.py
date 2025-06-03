@@ -1,4 +1,5 @@
 # main.py
+import openai
 import os
 import logging
 from typing import List

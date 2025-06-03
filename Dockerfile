@@ -1,14 +1,19 @@
-FROM python:3.13-slim
-
-RUN pip install --upgrade pip setuptools wheel
+FROM python:3.10-slim
 
 WORKDIR /app
-COPY requirements.txt .
 
-RUN echo "INFO: Instalando pacotes a partir do requirements.txt..." && \
-  pip install --no-cache-dir --pre -r requirements.txt \
-  && pip install --upgrade pip setuptools wheel && \
-  echo "INFO: Pacotes do requirements.txt instalados."
+# Copia somente o requirements.txt primeiro (para cache do Docker)
+COPY requirements.txt /app/requirements.txt
 
-COPY . .
-CMD ["gunicorn", "main:app", "--bind", "0.0.0.0:80", "--workers", "4"]
+# Instala as dependências listadas
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copia o restante do código fonte
+COPY . /app
+
+# Expõe a porta em que o Gunicorn/Uvicorn irá escutar
+EXPOSE 80
+
+# O comando abaixo assume que você tenha algo como "gunicorn.conf.py" configurado
+# e que o seu app FastAPI se chame "main:app"
+CMD ["gunicorn", "main:app", "-c", "gunicorn.conf.py"]
