@@ -1,149 +1,167 @@
+# main.py
 import logging
 from typing import List
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from azure.core.credentials import AzureKeyCredential
 from azure.search.documents.aio import SearchClient as AsyncSearchClient
-from openai import AsyncAzureOpenAI
-from azure.ai.openai.aio import OpenAIClient
+from azure.identity.aio import DefaultAzureCredential
+from openai import AsyncAzureOpenAI, get_bearer_token_provider
 
+# --------------------------------------------------------------------------- #
+# 1. Configurações via Pydantic Settings                                      #
+# --------------------------------------------------------------------------- #
 
-# (lembre-se de ter instalado azure-ai-openai e aiohttp nos requirements)
-
-# --- Logging básico ---
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# --- Configurações via Pydantic Settings ---
 class AppSettings(BaseSettings):
     AZURE_SEARCH_ENDPOINT: str
     AZURE_SEARCH_KEY: str
     AZURE_SEARCH_INDEX_NAME: str
 
     AZURE_OPENAI_ENDPOINT: str
-    AZURE_OPENAI_KEY: str
     AZURE_OPENAI_API_VERSION: str = "2024-02-01"
-    AZURE_OPENAI_MODEL: str = "embedding-deploy"  # ou o nome exato do seu deployment
+    AZURE_OPENAI_MODEL: str = "embedding-deploy"
 
     AZURE_SEARCH_CHUNK_FIELD: str = "chunk"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+
 settings = AppSettings()
 
-# --- Modelos Pydantic de Request/Response ---
+# --------------------------------------------------------------------------- #
+# 2. Modelos de request / response                                            #
+# --------------------------------------------------------------------------- #
+
 class QueryRequest(BaseModel):
     query: str
     top_k: int = Field(default=5, ge=1, le=20)
+
 
 class QueryResponse(BaseModel):
     answer: str
     sources: List[str]
 
+# --------------------------------------------------------------------------- #
+# 3. Dependências (injeção de clientes)                                       #
+# --------------------------------------------------------------------------- #
 
-# --- Dependências (injeção de clientes assíncronos) ---
 def get_search_client() -> AsyncSearchClient:
     return AsyncSearchClient(
         endpoint=settings.AZURE_SEARCH_ENDPOINT,
         index_name=settings.AZURE_SEARCH_INDEX_NAME,
-        credential=AzureKeyCredential(settings.AZURE_SEARCH_KEY)
-    )
-
-def get_openai_client() -> OpenAIClient:
-    return OpenAIClient(
-        endpoint=settings.AZURE_OPENAI_ENDPOINT,
-        credential=AzureKeyCredential(settings.AZURE_OPENAI_KEY),
-        api_version=settings.AZURE_OPENAI_API_VERSION
+        credential=AzureKeyCredential(settings.AZURE_SEARCH_KEY),
     )
 
 
-# --- Cria a aplicação FastAPI ---
+def get_openai_client() -> AsyncAzureOpenAI:
+    """
+    Cria um cliente AsyncAzureOpenAI autenticado via Managed-Identity / Azure AD.
+    O token é obtido on-demand pelo provider.
+    """
+    credential = DefaultAzureCredential()
+    token_provider = get_bearer_token_provider(
+        credential, scope="https://cognitiveservices.azure.com/.default"
+    )
+
+    return AsyncAzureOpenAI(
+        azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
+        azure_ad_token_provider=token_provider,
+        api_version=settings.AZURE_OPENAI_API_VERSION,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# 4. Instância FastAPI                                                        #
+# --------------------------------------------------------------------------- #
+
 app = FastAPI(title="RAG Backend")
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "message": "Service is healthy"}
+    return {"status": "ok"}
 
 
 @app.post("/query", response_model=QueryResponse)
 async def rag_query(
     req: QueryRequest,
     search_client: AsyncSearchClient = Depends(get_search_client),
-    openai_client: OpenAIClient   = Depends(get_openai_client)
+    openai_client: AsyncAzureOpenAI = Depends(get_openai_client),
 ):
-    logger.info(f"Received query: '{req.query}' with top_k={req.top_k}")
+    """
+    Executa uma consulta estilo Retrieval-Augmented Generation (RAG):
+    1. Busca documentos no Azure AI Search
+    2. Monta prompt com os trechos retornados
+    3. Gera resposta com Azure OpenAI
+    """
+    logging.info("Query recebida: %s | top_k=%d", req.query, req.top_k)
 
     try:
-        # 1) busca simples no Azure Search (sem semantic)
-        results = await search_client.search(
-            search_text=req.query,
-            top=req.top_k
+        # ------------------------------------------------------------------- #
+        # 4.1 Retrieval – Azure Search                                        #
+        # ------------------------------------------------------------------- #
+        results = await search_client.search(search_text=req.query, top=req.top_k)
+
+        snippets: List[str] = []
+        async for r in results:
+            chunk = (
+                r.get(settings.AZURE_SEARCH_CHUNK_FIELD)  # dict-like
+                if isinstance(r, dict)
+                else getattr(r, settings.AZURE_SEARCH_CHUNK_FIELD, None)
+            )
+            if chunk:
+                snippets.append(chunk)
+
+        prompt_context = (
+            "\n\n---\n\n".join(snippets) if snippets else "Nenhum contexto encontrado."
         )
 
-        # 2) coleta o(s) campo(s) de “chunk” retornado(s)
-        snippets: List[str] = []
-        async for result in results:
-            # result pode ser um dict-like ou um objeto; usamos .get() primeiro
-            chunk_text = None
-            try:
-                chunk_text = result.get(settings.AZURE_SEARCH_CHUNK_FIELD)
-            except Exception:
-                chunk_text = getattr(result, settings.AZURE_SEARCH_CHUNK_FIELD, None)
-
-            if chunk_text:
-                snippets.append(chunk_text)
-            else:
-                logger.warning(f"Campo '{settings.AZURE_SEARCH_CHUNK_FIELD}' não encontrado em: {result}")
-
-        if not snippets:
-            prompt_context = "Nenhum contexto específico encontrado."
-        else:
-            prompt_context = "\n\n---\n\n".join(snippets)
-
-        # 3) montar o prompt para o OpenAI
+        # ------------------------------------------------------------------- #
+        # 4.2 Geração – Azure OpenAI                                          #
+        # ------------------------------------------------------------------- #
         system_message = (
             "Você é um assistente de IA prestativo. "
-            "Responda à pergunta do usuário com base no contexto fornecido. "
-            "Se o contexto não for suficiente, informe educadamente."
+            "Responda à pergunta do usuário usando o contexto fornecido. "
+            "Se o contexto não for suficiente, diga isso educadamente."
         )
+
         user_prompt = (
-            "Use os seguintes trechos de contexto para responder à pergunta.\n\n"
+            f"Use os trechos de contexto a seguir para responder.\n\n"
             f"Contexto:\n{prompt_context}\n\n"
             f"Pergunta: {req.query}\n\nResposta:"
         )
 
-        logger.info(f"Enviando prompt para o modelo: {settings.AZURE_OPENAI_MODEL}")
-
-        # 4) chama o Azure OpenAI (chat completions)
-        chat = openai_client.chat_completions
         chat_response = await openai_client.chat.completions.create(
             model=settings.AZURE_OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": system_message},
-                {"role": "user",   "content": user_prompt}
+                {"role": "user", "content": user_prompt},
             ],
-            max_tokens=800
+            max_tokens=800,
         )
 
         answer = chat_response.choices[0].message.content.strip()
-        logger.info(f"Resposta do OpenAI: '{answer}'")
 
         return QueryResponse(answer=answer, sources=list(set(snippets)))
 
     except HTTPException:
-        raise  # deixa o FastAPI cuidar de erros HTTP “normais” (401, 404, etc)
-    except Exception as e:
-        logger.error(f"Error processing RAG query: {e}", exc_info=True)
+        raise  # deixa FastAPI propagar erros HTTP esperados
+    except Exception as exc:
+        logging.exception("Erro interno processando RAG: %s", exc)
         raise HTTPException(
             status_code=500,
-            detail=f"Ocorreu um erro interno ao processar sua solicitação: {str(e)}"
+            detail=f"Ocorreu um erro interno ao processar sua solicitação: {exc}",
         )
 
 
+# --------------------------------------------------------------------------- #
+# 5. Execução local (opcional)                                                #
+# --------------------------------------------------------------------------- #
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, log_level="info", reload=True)
+
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
