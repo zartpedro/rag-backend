@@ -2,6 +2,7 @@
 import os
 import logging
 from typing import List
+from openai import AzureOpenAI
 
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel, Field
