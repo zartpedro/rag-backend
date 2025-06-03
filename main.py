@@ -1,6 +1,3 @@
-# main.py
-import openai
-import os
 import logging
 from typing import List
 
@@ -12,6 +9,7 @@ from azure.core.credentials import AzureKeyCredential
 from azure.search.documents.aio import SearchClient as AsyncSearchClient
 from openai import AsyncAzureOpenAI
 from app.models.chat_models import ChatMessage
+from azure.ai.openai.aio import OpenAIClient
 
 
 # (lembre-se de ter instalado azure-ai-openai e aiohttp nos requirements)
@@ -123,7 +121,7 @@ async def rag_query(
 
         # 4) chama o Azure OpenAI (chat completions)
         chat = openai_client.chat_completions
-        chat_response = await chat.create(
+        chat_response = await openai_client.chat.completions.create(
             model=settings.AZURE_OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": system_message},
