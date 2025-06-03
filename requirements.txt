@@ -1,7 +1,6 @@
 azure-search-documents
 openai
 azure-identity
-azure-ai-openai>=1.0.0
 azure-core
 fastapi
 uvicorn[standard]
