@@ -8,7 +8,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from azure.core.credentials import AzureKeyCredential
 from azure.search.documents.aio import SearchClient as AsyncSearchClient
 from openai import AsyncAzureOpenAI
-from app.models.chat_models import ChatMessage
 from azure.ai.openai.aio import OpenAIClient
 
 
